@@ -24,8 +24,8 @@ func (c *telegramChat) IsAdmin(ctx context.Context, chatID, userID int64) bool {
 	return isAdminMember(member)
 }
 
-func (c *telegramChat) ResolveChannel(ctx context.Context, identifier string) (storage.Channel, bool) {
-	chat, err := c.tg.GetChat(ctx, &bot.GetChatParams{ChatID: identifier})
+func (c *telegramChat) ResolveChannel(ctx context.Context, username string) (storage.Channel, bool) {
+	chat, err := c.tg.GetChat(ctx, &bot.GetChatParams{ChatID: username})
 	if err != nil || chat.Type != models.ChatTypeChannel {
 		return storage.Channel{}, false
 	}

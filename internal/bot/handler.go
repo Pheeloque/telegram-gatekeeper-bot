@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"strings"
 
+	"telegram-gatekeeper-bot/internal/storage"
+
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"telegram-gatekeeper-bot/internal/storage"
 )
 
 // Moderation describes the application logic the handler uses.
@@ -25,7 +26,7 @@ type Moderation interface {
 // ChatService resolves group membership and channels through Telegram.
 type ChatService interface {
 	IsAdmin(ctx context.Context, chatID, userID int64) bool
-	ResolveChannel(ctx context.Context, identifier string) (storage.Channel, bool)
+	ResolveChannel(ctx context.Context, username string) (storage.Channel, bool)
 }
 
 type Handler struct {
@@ -173,7 +174,7 @@ func (h *Handler) startAddChannel(ctx context.Context, tg *bot.Bot, q *models.Ca
 		return
 	}
 	h.session.SetAwaiting(userID, InputAddChannel)
-	h.editCallback(ctx, tg, q, "Пришлите @username публичного канала, например @example_channel", nil)
+	h.editCallback(ctx, tg, q, "Пришлите @username или ID канала, либо перешлите любое сообщение из этого канала (например @example_channel или 1234567890)", nil)
 }
 
 func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
@@ -228,14 +229,9 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 		h.sendPrivate(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.", nil)
 		return
 	}
-	username := normalizeChannelUsername(msg.Text)
-	if username == "" {
-		h.sendPrivate(ctx, tg, userID, "Нужен публичный канал в формате @channel_username.", nil)
-		return
-	}
-	channel, found := h.chat.ResolveChannel(ctx, "@"+username)
-	if !found {
-		h.sendPrivate(ctx, tg, userID, "Не удалось найти публичный канал по этому username.", nil)
+	channel, ok := h.resolveChannelInput(ctx, msg)
+	if !ok {
+		h.sendPrivate(ctx, tg, userID, "Пришлите @username или ID канала, либо перешлите сюда любое сообщение из этого канала.", nil)
 		return
 	}
 	if err := h.moderation.AddChannel(groupID, channel); err != nil {
@@ -246,6 +242,40 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 	h.sendPrivate(ctx, tg, userID, "Канал добавлен в чёрный список: "+storage.DisplayChannel(channel), h.settingsKeyboard(groupID))
 }
 
+func (h *Handler) channelFromForward(msg *models.Message) (storage.Channel, bool) {
+	chat, ok := forwardChannel(msg.ForwardOrigin)
+	if !ok {
+		return storage.Channel{}, false
+	}
+	return storage.Channel{ID: chat.ID, Username: chat.Username, Title: chat.Title}, true
+}
+
+// resolveChannelInput turns a user's message into a channel to blacklist.
+// A forwarded message wins — its forward_origin carries the exact Bot API
+// channel ID. Otherwise the message text is parsed as a username or numeric ID.
+func (h *Handler) resolveChannelInput(ctx context.Context, msg *models.Message) (storage.Channel, bool) {
+	if channel, ok := h.channelFromForward(msg); ok {
+		return channel, true
+	}
+	ref, ok := parseChannelIdentifier(msg.Text)
+	if !ok {
+		return storage.Channel{}, false
+	}
+	return h.resolveIdentifier(ctx, ref)
+}
+
+// resolveIdentifier converts a parsed channel reference into a channel.
+// Usernames are resolved through Telegram. Numeric IDs cannot be resolved via
+// getChat unless the bot is a member, so they are stored directly:
+// a positive ID is normalized to the -100... supergroup/channel form that the
+// Bot API reports in forward_origin.
+func (h *Handler) resolveIdentifier(ctx context.Context, ref channelRef) (storage.Channel, bool) {
+	if ref.byID {
+		return storage.Channel{ID: normalizeChannelID(ref.id)}, true
+	}
+	return h.chat.ResolveChannel(ctx, "@"+ref.username)
+}
+
 func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	groupID, ok := h.session.GetSelectedGroup(userID)
@@ -254,9 +284,9 @@ func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *mo
 		h.sendPrivate(ctx, tg, userID, "У вас больше нет прав администратора этой группы.", nil)
 		return
 	}
-	channel, found := h.chat.ResolveChannel(ctx, strings.TrimSpace(msg.Text))
-	if !found {
-		h.sendPrivate(ctx, tg, userID, "Пришлите @username канала, который нужно удалить из списка.", nil)
+	channel, ok := h.resolveChannelInput(ctx, msg)
+	if !ok {
+		h.sendPrivate(ctx, tg, userID, "Пришлите @username или ID канала, либо перешлите сообщение из канала, который нужно удалить из списка.", nil)
 		return
 	}
 	if err := h.moderation.RemoveChannel(groupID, channel.ID); err != nil {
