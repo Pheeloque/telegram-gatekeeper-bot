@@ -10,6 +10,11 @@ import (
 	"sync"
 )
 
+var (
+	ErrNoGroup   = errors.New("group is not registered")
+	ErrNoChannel = errors.New("channel is not in group")
+)
+
 type Channel struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username,omitempty"`
@@ -132,7 +137,7 @@ func (s *Store) AddForbiddenChannel(groupID int64, channel Channel) error {
 	group, ok := s.Groups[groupID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("group %d is not registered", groupID)
+		return ErrNoGroup
 	}
 	if group.ForbiddenChannels == nil {
 		group.ForbiddenChannels = make(map[int64]Channel)
@@ -148,13 +153,13 @@ func (s *Store) RemoveForbiddenChannel(groupID, channelID int64) error {
 	if ok {
 		if _, exists := group.ForbiddenChannels[channelID]; !exists {
 			s.mu.Unlock()
-			return fmt.Errorf("channel %d is not in group %d", channelID, groupID)
+			return ErrNoChannel
 		}
 		delete(group.ForbiddenChannels, channelID)
 	}
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("group %d is not registered", groupID)
+		return ErrNoGroup
 	}
 	return s.save()
 }

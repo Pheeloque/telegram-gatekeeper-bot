@@ -2,10 +2,8 @@ package bot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,11 +17,10 @@ type Handler struct {
 	store      *storage.Store
 	moderation *moderation.Service
 	session    *Session
-	api        *apiClient
 }
 
-func NewHandler(store *storage.Store, moderationService *moderation.Service, api *apiClient) *Handler {
-	return &Handler{store: store, moderation: moderationService, session: newSession(), api: api}
+func NewHandler(store *storage.Store, moderationService *moderation.Service) *Handler {
+	return &Handler{store: store, moderation: moderationService, session: newSession()}
 }
 
 func (h *Handler) Handle(ctx context.Context, tg *bot.Bot, update *models.Update) {
@@ -63,7 +60,7 @@ func (h *Handler) handleModeration(ctx context.Context, tg *bot.Bot, msg *models
 	if msg.ForwardOrigin == nil {
 		return
 	}
-	channelID, ok := extractForwardedChannelID(msg.ForwardOrigin)
+	channelID, ok := forwardChannelID(msg.ForwardOrigin)
 	if !ok || !h.moderation.IsForbidden(msg.Chat.ID, channelID) {
 		return
 	}
@@ -75,30 +72,13 @@ func (h *Handler) handleModeration(ctx context.Context, tg *bot.Bot, msg *models
 	log.Printf("deleted forwarded message chat=%d message=%d from channel=%d", msg.Chat.ID, msg.ID, channelID)
 }
 
-func extractForwardedChannelID(origin *models.MessageOrigin) (int64, bool) {
-	raw, err := json.Marshal(origin)
-	if err != nil {
-		return 0, false
-	}
-	var value struct {
-		Type string `json:"type"`
-		Chat *struct {
-			ID int64 `json:"id"`
-		} `json:"chat,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &value); err != nil || value.Type != "channel" || value.Chat == nil || value.Chat.ID == 0 {
-		return 0, false
-	}
-	return value.Chat.ID, true
-}
-
 func (h *Handler) handlePrivateMessage(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	if command, ok := parseCommand(msg.Text); ok {
 		switch command {
 		case "start", "help", "groups":
 			h.session.SetAwaiting(userID, InputNone)
-			h.sendPrivate(ctx, tg, userID, "Выберите группу, которой хотите управлять:", h.groupsKeyboard(ctx, userID))
+			h.sendPrivate(ctx, tg, userID, "Выберите группу, которой хотите управлять:", h.groupsKeyboard(ctx, tg, userID))
 			return
 		}
 	}
@@ -124,7 +104,7 @@ func (h *Handler) handleCallback(ctx context.Context, tg *bot.Bot, q *models.Cal
 	switch {
 	case q.Data == "back":
 		h.session.SetAwaiting(userID, InputNone)
-		h.editCallback(ctx, tg, q, "Выберите группу:", h.groupsKeyboard(ctx, userID))
+		h.editCallback(ctx, tg, q, "Выберите группу:", h.groupsKeyboard(ctx, tg, userID))
 	case strings.HasPrefix(q.Data, "group:"):
 		h.openGroup(ctx, tg, q, userID)
 	case strings.HasPrefix(q.Data, "add:"):
@@ -144,7 +124,7 @@ func (h *Handler) openGroup(ctx context.Context, tg *bot.Bot, q *models.Callback
 		h.editCallback(ctx, tg, q, "Некорректный идентификатор группы.", nil)
 		return
 	}
-	if !h.isSelectedAdmin(ctx, userID, groupID) && !h.isAdmin(ctx, userID, groupID) {
+	if !h.isAdmin(ctx, tg, userID, groupID) {
 		h.editCallback(ctx, tg, q, "У вас нет прав администратора в этой группе.", nil)
 		return
 	}
@@ -155,7 +135,7 @@ func (h *Handler) openGroup(ctx context.Context, tg *bot.Bot, q *models.Callback
 
 func (h *Handler) startAddChannel(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "add:")
-	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -165,7 +145,7 @@ func (h *Handler) startAddChannel(ctx context.Context, tg *bot.Bot, q *models.Ca
 
 func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	channelID, groupID, ok := parseRemoveCallback(q.Data)
-	if !ok || !h.selectAndVerify(ctx, userID, groupID) {
+	if !ok || !h.selectAndVerify(ctx, tg, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -178,7 +158,7 @@ func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *m
 
 func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "list:")
-	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -187,7 +167,7 @@ func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQ
 
 func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "remove_menu:")
-	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -207,7 +187,7 @@ func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.Cal
 func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.isAdmin(ctx, userID, groupID) {
+	if !ok || !h.isAdmin(ctx, tg, userID, groupID) {
 		h.session.SetAwaiting(userID, InputNone)
 		h.sendPrivate(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.", nil)
 		return
@@ -217,8 +197,8 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 		h.sendPrivate(ctx, tg, userID, "Нужен публичный канал в формате @channel_username.", nil)
 		return
 	}
-	chat, err := h.api.GetChat(ctx, "@"+username)
-	if err != nil || chat.Type != "channel" {
+	chat, err := tg.GetChat(ctx, &bot.GetChatParams{ChatID: "@" + username})
+	if err != nil || chat.Type != models.ChatTypeChannel {
 		h.sendPrivate(ctx, tg, userID, "Не удалось найти публичный канал по этому username.", nil)
 		return
 	}
@@ -234,13 +214,13 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.isAdmin(ctx, userID, groupID) {
+	if !ok || !h.isAdmin(ctx, tg, userID, groupID) {
 		h.session.SetAwaiting(userID, InputNone)
 		h.sendPrivate(ctx, tg, userID, "У вас больше нет прав администратора этой группы.", nil)
 		return
 	}
-	chat, err := h.api.GetChat(ctx, strings.TrimSpace(msg.Text))
-	if err != nil || chat.Type != "channel" {
+	chat, err := tg.GetChat(ctx, &bot.GetChatParams{ChatID: strings.TrimSpace(msg.Text)})
+	if err != nil || chat.Type != models.ChatTypeChannel {
 		h.sendPrivate(ctx, tg, userID, "Пришлите @username канала, который нужно удалить из списка.", nil)
 		return
 	}
@@ -252,83 +232,28 @@ func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *mo
 	h.sendPrivate(ctx, tg, userID, "Канал удалён из чёрного списка.", h.settingsKeyboard(groupID))
 }
 
-func (h *Handler) groupsKeyboard(ctx context.Context, userID int64) *models.InlineKeyboardMarkup {
-	var rows [][]models.InlineKeyboardButton
-	for _, group := range h.store.GroupsSnapshot() {
-		isAdmin, err := h.api.IsAdmin(ctx, group.ID, userID)
-		if err != nil || !isAdmin {
-			continue
-		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: group.Title, CallbackData: "group:" + strconv.FormatInt(group.ID, 10)}})
-	}
-	if len(rows) == 0 {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "Нет доступных групп", CallbackData: "noop"}})
-	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
-}
-
-func (h *Handler) settingsKeyboard(groupID int64) *models.InlineKeyboardMarkup {
-	id := strconv.FormatInt(groupID, 10)
-	return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: "➕ Добавить канал", CallbackData: "add:" + id}},
-		{{Text: "📋 Чёрный список", CallbackData: "list:" + id}},
-		{{Text: "➖ Удалить канал", CallbackData: "remove_menu:" + id}},
-		{{Text: "⬅ К группам", CallbackData: "back"}},
-	}}
-}
-
-func (h *Handler) sendPrivate(ctx context.Context, tg *bot.Bot, userID int64, text string, markup *models.InlineKeyboardMarkup) {
-	params := &bot.SendMessageParams{ChatID: userID, Text: text}
-	if markup != nil {
-		params.ReplyMarkup = markup
-	}
-	if _, err := tg.SendMessage(ctx, params); err != nil {
-		log.Printf("send private message: %v", err)
-	}
-}
-
-func (h *Handler) editCallback(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, text string, markup *models.InlineKeyboardMarkup) {
-	if q.Message.Message == nil {
-		log.Printf("callback message is inaccessible: data=%q", q.Data)
-		h.sendPrivate(ctx, tg, q.From.ID, text, markup)
-		return
-	}
-
-	if _, err := tg.EditMessageText(ctx, &bot.EditMessageTextParams{
-		ChatID:      q.Message.Message.Chat.ID,
-		MessageID:   q.Message.Message.ID,
-		Text:        text,
-		ReplyMarkup: markup,
-	}); err != nil {
-		log.Printf("edit callback message: %v", err)
-		h.sendPrivate(ctx, tg, q.From.ID, text, markup)
-	}
-}
-
-func (h *Handler) answerCallback(ctx context.Context, tg *bot.Bot, id string) error {
-	_, err := tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: id})
+func (h *Handler) isAdmin(ctx context.Context, tg *bot.Bot, userID, groupID int64) bool {
+	member, err := tg.GetChatMember(ctx, &bot.GetChatMemberParams{ChatID: groupID, UserID: userID})
 	if err != nil {
-		log.Printf("answer callback: %v", err)
+		return false
 	}
-	return err
+	return hasAdminRights(member)
 }
 
-func (h *Handler) isAdmin(ctx context.Context, userID, groupID int64) bool {
-	ok, err := h.api.IsAdmin(ctx, groupID, userID)
-	return err == nil && ok
+func hasAdminRights(member *models.ChatMember) bool {
+	switch member.Type {
+	case models.ChatMemberTypeOwner, models.ChatMemberTypeAdministrator:
+		return true
+	}
+	return false
 }
 
-func (h *Handler) selectAndVerify(ctx context.Context, userID, groupID int64) bool {
-	if !h.isAdmin(ctx, userID, groupID) {
+func (h *Handler) selectAndVerify(ctx context.Context, tg *bot.Bot, userID, groupID int64) bool {
+	if !h.isAdmin(ctx, tg, userID, groupID) {
 		return false
 	}
 	h.session.SetSelectedGroup(userID, groupID)
 	return true
-}
-
-func (h *Handler) isSelectedAdmin(ctx context.Context, userID, groupID int64) bool {
-	selected, ok := h.session.GetSelectedGroup(userID)
-	return ok && selected == groupID && h.isAdmin(ctx, userID, groupID)
 }
 
 func (h *Handler) groupTitle(groupID int64) string {
@@ -338,66 +263,4 @@ func (h *Handler) groupTitle(groupID int64) string {
 		}
 	}
 	return strconv.FormatInt(groupID, 10)
-}
-
-func (h *Handler) listText(groupID int64) string {
-	channels := h.moderation.Channels(groupID)
-	if len(channels) == 0 {
-		return "Чёрный список пуст."
-	}
-	var b strings.Builder
-	b.WriteString("Запрещённые каналы:\n\n")
-	for i, channel := range channels {
-		fmt.Fprintf(&b, "%d. %s", i+1, storage.DisplayChannel(channel))
-		if channel.Title != "" {
-			fmt.Fprintf(&b, " — %s", channel.Title)
-		}
-		b.WriteByte('\n')
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func isGroupChat(chatType models.ChatType) bool {
-	return chatType == models.ChatTypeGroup || chatType == models.ChatTypeSupergroup
-}
-
-func parseCallbackID(data, prefix string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(data, prefix), 10, 64)
-}
-
-func parseRemoveCallback(data string) (channelID, groupID int64, ok bool) {
-	parts := strings.Split(strings.TrimPrefix(data, "remove:"), ":")
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	channelID, err1 := strconv.ParseInt(parts[0], 10, 64)
-	groupID, err2 := strconv.ParseInt(parts[1], 10, 64)
-	return channelID, groupID, err1 == nil && err2 == nil
-}
-
-var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_]{5,}$`)
-
-func normalizeChannelUsername(input string) string {
-	value := strings.TrimSpace(input)
-	for _, prefix := range []string{"https://t.me/", "http://t.me/", "t.me/"} {
-		value = strings.TrimPrefix(value, prefix)
-	}
-	value = strings.TrimPrefix(value, "@")
-	value = strings.TrimSuffix(value, "/")
-	if !usernameRe.MatchString(value) {
-		return ""
-	}
-	return value
-}
-
-func parseCommand(text string) (string, bool) {
-	fields := strings.Fields(strings.TrimSpace(text))
-	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
-		return "", false
-	}
-	command := strings.TrimPrefix(fields[0], "/")
-	if at := strings.IndexByte(command, '@'); at >= 0 {
-		command = command[:at]
-	}
-	return strings.ToLower(command), command != ""
 }

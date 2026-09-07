@@ -11,9 +11,12 @@ telegram-gatekeeper-bot/
 │       └── main.go
 ├── internal/
 │   ├── bot/
-│   │   ├── api.go
+│   │   ├── forward_origin.go
 │   │   ├── handler.go
-│   │   └── session.go
+│   │   ├── keyboard.go
+│   │   ├── message.go
+│   │   ├── session.go
+│   │   └── util.go
 │   ├── config/
 │   │   └── config.go
 │   ├── moderation/

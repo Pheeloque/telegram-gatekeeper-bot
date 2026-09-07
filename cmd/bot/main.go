@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"os/signal"
+	"syscall"
 
 	telegram "github.com/go-telegram/bot"
 	appbot "telegram-gatekeeper-bot/internal/bot"
@@ -23,18 +25,20 @@ func main() {
 	}
 
 	moderationService := moderation.New(store)
-	handler := appbot.NewHandler(store, moderationService, appbot.NewAPIClient(cfg.TelegramBotToken))
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	tg, err := telegram.New(
 		cfg.TelegramBotToken,
 		telegram.WithAllowedUpdates(telegram.AllowedUpdates{"message", "callback_query", "my_chat_member"}),
-		telegram.WithDefaultHandler(handler.Handle),
+		telegram.WithDefaultHandler(appbot.NewHandler(store, moderationService).Handle),
 	)
 	if err != nil {
 		log.Fatalf("create bot: %v", err)
 	}
 
-	me, err := tg.GetMe(context.Background())
+	me, err := tg.GetMe(ctx)
 	if err != nil {
 		log.Fatalf("get bot info: %v", err)
 	}
@@ -42,5 +46,6 @@ func main() {
 	log.Printf("bot started as @%s", me.Username)
 	log.Printf("storage: %s", cfg.StoragePath)
 
-	tg.Start(context.Background())
+	tg.Start(ctx)
+	log.Println("bot stopped")
 }
