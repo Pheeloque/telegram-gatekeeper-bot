@@ -56,3 +56,14 @@ func parseCommand(text string) (string, bool) {
 	}
 	return strings.ToLower(command), command != ""
 }
+
+func userDisplayName(u *models.User) string {
+	if u.Username != "" {
+		return "@" + u.Username
+	}
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if name != "" {
+		return name
+	}
+	return strconv.FormatInt(u.ID, 10)
+}

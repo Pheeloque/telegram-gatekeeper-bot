@@ -58,6 +58,42 @@ func TestForwardChannelID(t *testing.T) {
 	}
 }
 
+func TestForwardChannelName(t *testing.T) {
+	mk := func(chat models.Chat) *models.MessageOrigin {
+		return &models.MessageOrigin{MessageOriginChannel: &models.MessageOriginChannel{Chat: chat}}
+	}
+
+	if got := forwardChannelName(mk(models.Chat{Username: "chan", Title: "T"})); got != "@chan" {
+		t.Fatalf("expected @chan, got %q", got)
+	}
+	if got := forwardChannelName(mk(models.Chat{Title: "Channel"})); got != "Channel" {
+		t.Fatalf("expected Channel, got %q", got)
+	}
+	if got := forwardChannelName(mk(models.Chat{})); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := forwardChannelName(nil); got != "" {
+		t.Fatalf("expected empty for nil, got %q", got)
+	}
+}
+
+func TestUserDisplayName(t *testing.T) {
+	withUsername := &models.User{Username: "alice", FirstName: "A", LastName: "B"}
+	if got := userDisplayName(withUsername); got != "@alice" {
+		t.Fatalf("expected @alice, got %q", got)
+	}
+
+	noUsername := &models.User{FirstName: "Alice", LastName: "Smith"}
+	if got := userDisplayName(noUsername); got != "Alice Smith" {
+		t.Fatalf("expected 'Alice Smith', got %q", got)
+	}
+
+	empty := &models.User{ID: 42}
+	if got := userDisplayName(empty); got != "42" {
+		t.Fatalf("expected 42, got %q", got)
+	}
+}
+
 func TestHasAdminRights(t *testing.T) {
 	admin := &models.ChatMember{Type: models.ChatMemberTypeAdministrator}
 	owner := &models.ChatMember{Type: models.ChatMemberTypeOwner}

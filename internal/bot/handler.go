@@ -85,6 +85,25 @@ func (h *Handler) handleModeration(ctx context.Context, tg *bot.Bot, msg *models
 		return
 	}
 	log.Printf("deleted forwarded message chat=%d message=%d from channel=%d", msg.Chat.ID, msg.ID, channelID)
+
+	h.notifyDeleted(ctx, tg, msg)
+}
+
+func (h *Handler) notifyDeleted(ctx context.Context, tg *bot.Bot, msg *models.Message) {
+	var b strings.Builder
+	b.WriteString("⚠️ Сообщение из недопустимого канала было удалено.")
+	if channel := forwardChannelName(msg.ForwardOrigin); channel != "" {
+		b.WriteString("\n📢 Канал: ")
+		b.WriteString(channel)
+	}
+	if msg.From != nil {
+		b.WriteString("\n👤 Отправитель: ")
+		b.WriteString(userDisplayName(msg.From))
+	}
+	b.WriteString("\n\nПересылки из этого канала в группе запрещены.")
+	if _, err := tg.SendMessage(ctx, &bot.SendMessageParams{ChatID: msg.Chat.ID, Text: b.String()}); err != nil {
+		log.Printf("send moderation notice chat=%d: %v", msg.Chat.ID, err)
+	}
 }
 
 func (h *Handler) handlePrivateMessage(ctx context.Context, tg *bot.Bot, msg *models.Message) {
