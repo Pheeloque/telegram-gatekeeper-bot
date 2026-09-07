@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -36,6 +37,13 @@ func (h *Handler) editCallback(ctx context.Context, tg *bot.Bot, q *models.Callb
 		Text:        text,
 		ReplyMarkup: replyMarkup,
 	}); err != nil {
+		// Telegram rejects edits that leave the message unchanged (same text and
+		// same keyboard). This is expected when a user taps the same button
+		// twice, so it is not an error and must not fall back to a duplicate
+		// message.
+		if strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+			return
+		}
 		log.Printf("edit callback message: %v", err)
 		h.sendPrivate(ctx, tg, q.From.ID, text, markup)
 	}

@@ -171,6 +171,49 @@ func TestChannelFromForward(t *testing.T) {
 	}
 }
 
+func TestResolveChannelInput(t *testing.T) {
+	fake := &fakeChatService{}
+	h := &Handler{chat: fake}
+
+	channelForward := &models.Message{
+		ForwardOrigin: &models.MessageOrigin{
+			MessageOriginChannel: &models.MessageOriginChannel{
+				Chat: models.Chat{ID: -1001234567890, Username: "chan", Title: "Channel"},
+			},
+		},
+		Text: "should be ignored",
+	}
+	channel, verified, ok := h.resolveChannelInput(context.Background(), channelForward)
+	if !ok || !verified || channel.ID != -1001234567890 {
+		t.Fatalf("expected channel forward to resolve, got %+v (verified=%v ok=%v)", channel, verified, ok)
+	}
+
+	// Text of a channel forward must NOT be parsed as a reference.
+	if len(fake.resolved) != 0 {
+		t.Fatalf("channel forward should not hit chat service, got %v", fake.resolved)
+	}
+
+	userForward := &models.Message{
+		ForwardOrigin: &models.MessageOrigin{
+			MessageOriginUser: &models.MessageOriginUser{SenderUser: models.User{ID: 5}},
+		},
+		Text: "1234567",
+	}
+	if _, _, ok := h.resolveChannelInput(context.Background(), userForward); ok {
+		t.Fatal("non-channel forward should be rejected")
+	}
+
+	text := &models.Message{Text: "@my_channel"}
+	channel, verified, ok = h.resolveChannelInput(context.Background(), text)
+	if !ok || !verified || channel.ID != 7 || len(fake.resolved) != 1 || fake.resolved[0] != "@my_channel" {
+		t.Fatalf("expected text reference to resolve, got %+v (verified=%v ok=%v) fake=%v", channel, verified, ok, fake.resolved)
+	}
+
+	if _, _, ok := h.resolveChannelInput(context.Background(), &models.Message{Text: "not a ref"}); ok {
+		t.Fatal("unparseable text should be rejected")
+	}
+}
+
 func TestForwardChannelName(t *testing.T) {
 	mk := func(chat models.Chat) *models.MessageOrigin {
 		return &models.MessageOrigin{MessageOriginChannel: &models.MessageOriginChannel{Chat: chat}}

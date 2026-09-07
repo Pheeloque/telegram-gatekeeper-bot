@@ -62,9 +62,6 @@ func (h *Handler) handleMessage(ctx context.Context, tg *bot.Bot, msg *models.Me
 		if err := h.moderation.UpsertGroup(msg.Chat.ID, msg.Chat.Title); err != nil {
 			log.Printf("store group: %v", err)
 		}
-		if msg.From != nil && msg.From.IsBot {
-			return
-		}
 		h.handleModeration(ctx, tg, msg)
 		return
 	}
@@ -195,7 +192,13 @@ func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *m
 		h.editCallback(ctx, tg, q, "Не удалось удалить канал.", nil)
 		return
 	}
-	h.editCallback(ctx, tg, q, "Канал удалён из чёрного списка.", h.settingsKeyboard(groupID))
+	// Stay on the removal screen so the admin can delete several channels in a row.
+	text, markup := h.removeMenu(groupID)
+	if markup == nil {
+		h.editCallback(ctx, tg, q, "Канал удалён. Чёрный список пуст.", h.settingsKeyboard(groupID))
+		return
+	}
+	h.editCallback(ctx, tg, q, "Канал удалён.\n\n"+text, markup)
 }
 
 func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
@@ -207,16 +210,12 @@ func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQ
 	h.editCallback(ctx, tg, q, h.listText(groupID), h.settingsKeyboard(groupID))
 }
 
-func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
-	groupID, err := parseCallbackID(q.Data, "remove_menu:")
-	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
-		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
-		return
-	}
+// removeMenu builds the "delete a channel" screen. When the blacklist is empty
+// it returns a nil markup so the caller renders the empty state.
+func (h *Handler) removeMenu(groupID int64) (string, *models.InlineKeyboardMarkup) {
 	channels := h.moderation.Channels(groupID)
 	if len(channels) == 0 {
-		h.editCallback(ctx, tg, q, "Чёрный список пуст.", h.settingsKeyboard(groupID))
-		return
+		return "Чёрный список пуст.", nil
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, len(channels)+1)
 	for _, channel := range channels {
@@ -226,15 +225,27 @@ func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.Cal
 		}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: "⬅ Назад", CallbackData: "group:" + strconv.FormatInt(groupID, 10)}})
-	h.editCallback(ctx, tg, q, "Выберите канал для удаления:", &models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	return "Выберите канал для удаления:", &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
+	groupID, err := parseCallbackID(q.Data, "remove_menu:")
+	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
+		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
+		return
+	}
+	text, markup := h.removeMenu(groupID)
+	if markup == nil {
+		h.editCallback(ctx, tg, q, text, h.settingsKeyboard(groupID))
+		return
+	}
+	h.editCallback(ctx, tg, q, text, markup)
 }
 
 func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
-	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.chat.IsAdmin(ctx, groupID, userID) {
-		h.session.SetAwaiting(userID, InputNone)
-		h.sendPrivate(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.", nil)
+	groupID, ok := h.selectedAdminGroup(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.")
+	if !ok {
 		return
 	}
 	channel, verified, ok := h.resolveChannelInput(ctx, msg)
@@ -249,7 +260,7 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 	h.session.SetAwaiting(userID, InputNone)
 	text := "Канал добавлен в чёрный список: " + storage.DisplayChannel(channel)
 	if !verified {
-		text += "\n\nНазвание канала подставится автоматически после первой пересылки сообщения из него в бота или в группу."
+		text += "\n\nНазвание канала в чёрном списке подставится автоматически после первой пересылки сообщения в группе из него в бота или в группу."
 	}
 	h.sendPrivate(ctx, tg, userID, text, h.settingsKeyboard(groupID))
 }
@@ -263,13 +274,16 @@ func (h *Handler) channelFromForward(msg *models.Message) (storage.Channel, bool
 }
 
 // resolveChannelInput turns a user's message into a channel to blacklist.
-// A forwarded message wins — its forward_origin carries the exact Bot API
-// channel ID. Otherwise the message text is parsed as a username or numeric ID.
+// A channel forward wins — its forward_origin carries the exact Bot API
+// channel ID. Any other forwarded message is rejected rather than being parsed
+// as text, since the text of a non-channel forward is not a channel reference.
+// Otherwise the message text is parsed as a username or numeric ID.
 // The second return reports whether the channel identity was confirmed through
 // Telegram (a forwarded origin or a successful getChat lookup).
 func (h *Handler) resolveChannelInput(ctx context.Context, msg *models.Message) (channel storage.Channel, verified, ok bool) {
-	if channel, found := h.channelFromForward(msg); found {
-		return channel, true, true
+	if msg.ForwardOrigin != nil {
+		channel, found := h.channelFromForward(msg)
+		return channel, true, found
 	}
 	ref, found := parseChannelIdentifier(msg.Text)
 	if !found {
@@ -297,10 +311,8 @@ func (h *Handler) resolveIdentifier(ctx context.Context, ref channelRef) (channe
 
 func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
-	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.chat.IsAdmin(ctx, groupID, userID) {
-		h.session.SetAwaiting(userID, InputNone)
-		h.sendPrivate(ctx, tg, userID, "У вас больше нет прав администратора этой группы.", nil)
+	groupID, ok := h.selectedAdminGroup(ctx, tg, userID, "У вас больше нет прав администратора этой группы.")
+	if !ok {
 		return
 	}
 	channel, _, ok := h.resolveChannelInput(ctx, msg)
@@ -319,6 +331,19 @@ func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *mo
 func (h *Handler) selectGroup(userID, groupID int64) {
 	h.session.SetSelectedGroup(userID, groupID)
 	h.session.SetAwaiting(userID, InputNone)
+}
+
+// selectedAdminGroup returns the group the user has selected if they are still
+// an admin of it. Otherwise it resets the pending input and notifies the user
+// with deniedText.
+func (h *Handler) selectedAdminGroup(ctx context.Context, tg *bot.Bot, userID int64, deniedText string) (int64, bool) {
+	groupID, ok := h.session.GetSelectedGroup(userID)
+	if !ok || !h.chat.IsAdmin(ctx, groupID, userID) {
+		h.session.SetAwaiting(userID, InputNone)
+		h.sendPrivate(ctx, tg, userID, deniedText, nil)
+		return 0, false
+	}
+	return groupID, true
 }
 
 func (h *Handler) selectAndVerify(ctx context.Context, userID, groupID int64) bool {
