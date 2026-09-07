@@ -124,7 +124,7 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	defer reloaded.Close()
+	defer func() { _ = reloaded.Close() }()
 
 	if !reloaded.IsChannelForbidden(1, 10) {
 		t.Fatal("channel should survive reload")
@@ -141,7 +141,7 @@ func TestNewCreatesEmptyStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if len(s.Groups()) != 0 {
 		t.Fatal("expected empty groups")

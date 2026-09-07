@@ -111,6 +111,7 @@ func (s *Store) Groups() []Group {
 	if err != nil {
 		return nil
 	}
+	defer func() { _ = rows.Close() }()
 
 	type row struct {
 		id    int64
@@ -120,16 +121,13 @@ func (s *Store) Groups() []Group {
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.title); err != nil {
-			rows.Close()
 			return nil
 		}
 		found = append(found, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil
 	}
-	rows.Close()
 
 	result := make([]Group, 0, len(found))
 	for _, r := range found {
@@ -147,7 +145,7 @@ func (s *Store) channelsFor(groupID int64) map[int64]Channel {
 	if err != nil {
 		return map[int64]Channel{}
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make(map[int64]Channel)
 	for rows.Next() {
@@ -174,7 +172,7 @@ func (s *Store) Channels(groupID int64) []Channel {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	channels := make([]Channel, 0)
 	for rows.Next() {

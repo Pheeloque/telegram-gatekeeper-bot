@@ -1,0 +1,2 @@
+# Normalize line endings to LF so that gofmt checks in CI (Linux) pass.
+*.go text eol=lf
