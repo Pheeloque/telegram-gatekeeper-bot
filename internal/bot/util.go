@@ -45,6 +45,45 @@ func normalizeChannelUsername(input string) string {
 	return value
 }
 
+// channelRef is a user-provided channel reference that has been parsed into a
+// concrete form: either a channel username or a numeric chat ID.
+type channelRef struct {
+	username string
+	id       int64
+	byID     bool
+}
+
+// parseChannelIdentifier parses a user-provided channel reference. It accepts
+// either a public channel username (with or without @ or t.me/ prefix) or a
+// numeric channel ID.
+func parseChannelIdentifier(input string) (channelRef, bool) {
+	value := strings.TrimSpace(input)
+	for _, prefix := range []string{"https://t.me/", "http://t.me/", "t.me/"} {
+		value = strings.TrimPrefix(value, prefix)
+	}
+	value = strings.TrimSuffix(value, "/")
+	if id, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return channelRef{id: id, byID: true}, true
+	}
+	if username := normalizeChannelUsername(value); username != "" {
+		return channelRef{username: username}, true
+	}
+	return channelRef{}, false
+}
+
+// normalizeChannelID converts a user-visible numeric chat ID into the full Bot
+// API ID for supergroups and channels. Telegram shows such IDs without the
+// "-100" prefix, so a positive ID is treated as the numeric suffix.
+func normalizeChannelID(id int64) int64 {
+	if id <= 0 {
+		return id
+	}
+	if withPrefix, err := strconv.ParseInt("-100"+strconv.FormatInt(id, 10), 10, 64); err == nil {
+		return withPrefix
+	}
+	return id
+}
+
 func parseCommand(text string) (string, bool) {
 	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {

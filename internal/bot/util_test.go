@@ -1,7 +1,10 @@
 package bot
 
 import (
+	"context"
 	"testing"
+
+	"telegram-gatekeeper-bot/internal/storage"
 
 	"github.com/go-telegram/bot/models"
 )
@@ -20,6 +23,97 @@ func TestNormalizeChannelUsername(t *testing.T) {
 		if got := normalizeChannelUsername(input); got != want {
 			t.Errorf("normalizeChannelUsername(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestParseChannelIdentifier(t *testing.T) {
+	cases := []struct {
+		input string
+		ref   channelRef
+		ok    bool
+	}{
+		{"@example_channel", channelRef{username: "example_channel"}, true},
+		{"example", channelRef{username: "example"}, true},
+		{"https://t.me/example", channelRef{username: "example"}, true},
+		{"-1001234567890", channelRef{id: -1001234567890, byID: true}, true},
+		{"1001234567", channelRef{id: 1001234567, byID: true}, true},
+		{"ab", channelRef{}, false},
+		{"has space", channelRef{}, false},
+		{"", channelRef{}, false},
+	}
+	for _, tc := range cases {
+		got, ok := parseChannelIdentifier(tc.input)
+		if ok != tc.ok {
+			t.Errorf("parseChannelIdentifier(%q) ok = %v, want %v", tc.input, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got != tc.ref {
+			t.Errorf("parseChannelIdentifier(%q) = %+v, want %+v", tc.input, got, tc.ref)
+		}
+	}
+}
+
+func TestNormalizeChannelID(t *testing.T) {
+	cases := map[int64]int64{
+		-1001418440636: -1001418440636,
+		1418440636:     -1001418440636,
+		0:              0,
+		-123456:        -123456,
+	}
+	for input, want := range cases {
+		if got := normalizeChannelID(input); got != want {
+			t.Errorf("normalizeChannelID(%d) = %d, want %d", input, got, want)
+		}
+	}
+}
+
+type fakeChatService struct {
+	resolved []string
+	byID     map[int64]storage.Channel
+}
+
+func (f *fakeChatService) IsAdmin(ctx context.Context, chatID, userID int64) bool { return true }
+
+func (f *fakeChatService) ResolveChannel(ctx context.Context, username string) (storage.Channel, bool) {
+	f.resolved = append(f.resolved, username)
+	return storage.Channel{ID: 7, Username: "chan"}, true
+}
+
+func (f *fakeChatService) ResolveChannelByID(ctx context.Context, id int64) (storage.Channel, bool) {
+	channel, ok := f.byID[id]
+	return channel, ok
+}
+
+func TestResolveIdentifier(t *testing.T) {
+	fake := &fakeChatService{byID: map[int64]storage.Channel{
+		-1001418440636: {ID: -1001418440636, Title: "Known Channel"},
+	}}
+	h := &Handler{chat: fake}
+
+	channel, verified, ok := h.resolveIdentifier(context.Background(), channelRef{id: 1418440636, byID: true})
+	if !ok || !verified || channel.Title != "Known Channel" || channel.ID != -1001418440636 {
+		t.Fatalf("expected verified channel, got %+v (verified=%v ok=%v)", channel, verified, ok)
+	}
+
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{id: 2222222, byID: true})
+	if !ok || verified || channel.ID != -1002222222 {
+		t.Fatalf("expected unverified channel with ID -1002222222, got %+v (verified=%v ok=%v)", channel, verified, ok)
+	}
+
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{id: -1001418440636, byID: true})
+	if !ok || !verified || channel.ID != -1001418440636 {
+		t.Fatalf("expected ID -1001418440636 unchanged, got %d (verified=%v ok=%v)", channel.ID, verified, ok)
+	}
+
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{username: "chan"})
+	if !ok || !verified || channel.ID != 7 {
+		t.Fatalf("expected username resolved through chat service, got ID=%d (verified=%v ok=%v)", channel.ID, verified, ok)
+	}
+	if len(fake.resolved) != 1 || fake.resolved[0] != "@chan" {
+		t.Fatalf("expected username path to use chat service, got %v", fake.resolved)
 	}
 }
 
@@ -55,6 +149,68 @@ func TestForwardChannelID(t *testing.T) {
 	id, ok := forwardChannelID(origin)
 	if !ok || id != 123 {
 		t.Fatalf("expected id=123 ok=true, got id=%d ok=%v", id, ok)
+	}
+}
+
+func TestChannelFromForward(t *testing.T) {
+	h := &Handler{}
+	if _, ok := h.channelFromForward(&models.Message{}); ok {
+		t.Fatal("message without forward origin should not resolve")
+	}
+
+	forwarded := &models.Message{
+		ForwardOrigin: &models.MessageOrigin{
+			MessageOriginChannel: &models.MessageOriginChannel{
+				Chat: models.Chat{ID: -1001234567890, Username: "chan", Title: "Channel"},
+			},
+		},
+	}
+	channel, ok := h.channelFromForward(forwarded)
+	if !ok || channel.ID != -1001234567890 || channel.Username != "chan" || channel.Title != "Channel" {
+		t.Fatalf("unexpected channel from forward: %+v (ok=%v)", channel, ok)
+	}
+}
+
+func TestResolveChannelInput(t *testing.T) {
+	fake := &fakeChatService{}
+	h := &Handler{chat: fake}
+
+	channelForward := &models.Message{
+		ForwardOrigin: &models.MessageOrigin{
+			MessageOriginChannel: &models.MessageOriginChannel{
+				Chat: models.Chat{ID: -1001234567890, Username: "chan", Title: "Channel"},
+			},
+		},
+		Text: "should be ignored",
+	}
+	channel, verified, ok := h.resolveChannelInput(context.Background(), channelForward)
+	if !ok || !verified || channel.ID != -1001234567890 {
+		t.Fatalf("expected channel forward to resolve, got %+v (verified=%v ok=%v)", channel, verified, ok)
+	}
+
+	// Text of a channel forward must NOT be parsed as a reference.
+	if len(fake.resolved) != 0 {
+		t.Fatalf("channel forward should not hit chat service, got %v", fake.resolved)
+	}
+
+	userForward := &models.Message{
+		ForwardOrigin: &models.MessageOrigin{
+			MessageOriginUser: &models.MessageOriginUser{SenderUser: models.User{ID: 5}},
+		},
+		Text: "1234567",
+	}
+	if _, _, ok := h.resolveChannelInput(context.Background(), userForward); ok {
+		t.Fatal("non-channel forward should be rejected")
+	}
+
+	text := &models.Message{Text: "@my_channel"}
+	channel, verified, ok = h.resolveChannelInput(context.Background(), text)
+	if !ok || !verified || channel.ID != 7 || len(fake.resolved) != 1 || fake.resolved[0] != "@my_channel" {
+		t.Fatalf("expected text reference to resolve, got %+v (verified=%v ok=%v) fake=%v", channel, verified, ok, fake.resolved)
+	}
+
+	if _, _, ok := h.resolveChannelInput(context.Background(), &models.Message{Text: "not a ref"}); ok {
+		t.Fatal("unparseable text should be rejected")
 	}
 }
 

@@ -75,3 +75,18 @@ func TestChannels(t *testing.T) {
 		t.Fatalf("expected sorted by username, got %+v", channels)
 	}
 }
+
+func TestEnrichChannel(t *testing.T) {
+	s := newTestService(t)
+	if err := s.AddChannel(1, storage.Channel{ID: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnrichChannel(1, storage.Channel{ID: 10, Username: "chan", Title: "Channel"}); err != nil {
+		t.Fatalf("EnrichChannel: %v", err)
+	}
+
+	channels := s.Channels(1)
+	if len(channels) != 1 || channels[0].Username != "chan" || channels[0].Title != "Channel" {
+		t.Fatalf("expected enriched channel, got %+v", channels)
+	}
+}

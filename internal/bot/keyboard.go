@@ -43,7 +43,7 @@ func (h *Handler) listText(groupID int64) string {
 	b.WriteString("Запрещённые каналы:\n\n")
 	for i, channel := range channels {
 		fmt.Fprintf(&b, "%d. %s", i+1, storage.DisplayChannel(channel))
-		if channel.Title != "" {
+		if channel.Username != "" && channel.Title != "" {
 			fmt.Fprintf(&b, " — %s", channel.Title)
 		}
 		b.WriteByte('\n')

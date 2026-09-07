@@ -71,6 +71,72 @@ func TestAddChannel(t *testing.T) {
 	}
 }
 
+func TestAddChannelEnrichesExisting(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertGroup(1, "G"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.AddChannel(1, Channel{ID: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.AddChannel(1, Channel{ID: 10, Username: "chan", Title: "Channel"}); err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	channels := s.Channels(1)
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if channels[0].Username != "chan" || channels[0].Title != "Channel" {
+		t.Fatalf("expected enriched channel, got %+v", channels[0])
+	}
+}
+
+func TestAddChannelKeepsExistingWhenEmpty(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertGroup(1, "G"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.AddChannel(1, Channel{ID: 10, Username: "chan", Title: "Channel"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.AddChannel(1, Channel{ID: 10}); err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	channels := s.Channels(1)
+	if channels[0].Username != "chan" || channels[0].Title != "Channel" {
+		t.Fatalf("expected existing data preserved, got %+v", channels[0])
+	}
+}
+
+func TestEnrichChannel(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertGroup(1, "G"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.AddChannel(1, Channel{ID: 10}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.EnrichChannel(1, Channel{ID: 10, Username: "chan", Title: "Channel"}); err != nil {
+		t.Fatalf("EnrichChannel: %v", err)
+	}
+
+	channels := s.Channels(1)
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if channels[0].Username != "chan" || channels[0].Title != "Channel" {
+		t.Fatalf("expected enriched channel, got %+v", channels[0])
+	}
+}
+
 func TestAddChannelUnknownGroup(t *testing.T) {
 	s := newTestStore(t)
 	err := s.AddChannel(42, Channel{ID: 1})

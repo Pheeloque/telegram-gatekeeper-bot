@@ -191,14 +191,27 @@ func (s *Store) Channels(groupID int64) []Channel {
 	return channels
 }
 
+// enrichChannelSQL fills in missing display fields of an existing channel row.
+// Only non-empty incoming values are written, so a channel added by bare ID
+// can be enriched with its title/username later without wiping current data.
+const enrichChannelSQL = `UPDATE forbidden_channels SET
+	username = CASE WHEN ? <> '' THEN ? ELSE username END,
+	title = CASE WHEN ? <> '' THEN ? ELSE title END
+	WHERE group_id = ? AND channel_id = ?`
+
 func (s *Store) AddChannel(groupID int64, channel Channel) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if !s.groupExists(groupID) {
+		return ErrNoGroup
+	}
+
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO forbidden_channels (group_id, channel_id, username, title)
-		 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ?)`,
-		groupID, channel.ID, channel.Username, channel.Title, groupID,
+		enrichChannelSQL,
+		channel.Username, channel.Username,
+		channel.Title, channel.Title,
+		groupID, channel.ID,
 	)
 	if err != nil {
 		return err
@@ -207,10 +220,30 @@ func (s *Store) AddChannel(groupID int64, channel Channel) error {
 	if err != nil {
 		return err
 	}
-	if affected == 0 && !s.groupExists(groupID) {
-		return ErrNoGroup
+	if affected > 0 {
+		return nil
 	}
-	return nil
+
+	_, err = s.db.Exec(
+		`INSERT OR IGNORE INTO forbidden_channels (group_id, channel_id, username, title) VALUES (?, ?, ?, ?)`,
+		groupID, channel.ID, channel.Username, channel.Title,
+	)
+	return err
+}
+
+// EnrichChannel fills in the display data of an already-blacklisted channel,
+// leaving fields that are already set untouched.
+func (s *Store) EnrichChannel(groupID int64, channel Channel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(
+		enrichChannelSQL,
+		channel.Username, channel.Username,
+		channel.Title, channel.Title,
+		groupID, channel.ID,
+	)
+	return err
 }
 
 func (s *Store) RemoveChannel(groupID, channelID int64) error {
