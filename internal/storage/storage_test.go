@@ -27,7 +27,7 @@ func TestUpsertAndSnapshotGroup(t *testing.T) {
 		t.Fatalf("UpsertGroup: %v", err)
 	}
 
-	groups := s.GroupsSnapshot()
+	groups := s.Groups()
 	if len(groups) != 2 {
 		t.Fatalf("expected 2 groups, got %d", len(groups))
 	}
@@ -46,52 +46,52 @@ func TestUpsertGroupUpdatesTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	groups := s.GroupsSnapshot()
+	groups := s.Groups()
 	if groups[0].Title != "New" {
 		t.Fatalf("expected updated title, got %q", groups[0].Title)
 	}
 }
 
-func TestAddForbiddenChannel(t *testing.T) {
+func TestAddChannel(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.UpsertGroup(1, "G"); err != nil {
 		t.Fatal(err)
 	}
 
 	ch := Channel{ID: 10, Username: "chan", Title: "Channel"}
-	if err := s.AddForbiddenChannel(1, ch); err != nil {
-		t.Fatalf("AddForbiddenChannel: %v", err)
+	if err := s.AddChannel(1, ch); err != nil {
+		t.Fatalf("AddChannel: %v", err)
 	}
 
-	if s.IsForbidden(1, 10) != true {
+	if s.IsChannelForbidden(1, 10) != true {
 		t.Fatal("expected channel to be forbidden")
 	}
-	if s.IsForbidden(1, 99) != false {
+	if s.IsChannelForbidden(1, 99) != false {
 		t.Fatal("expected non-listed channel not to be forbidden")
 	}
 }
 
-func TestAddForbiddenChannelUnknownGroup(t *testing.T) {
+func TestAddChannelUnknownGroup(t *testing.T) {
 	s := newTestStore(t)
-	err := s.AddForbiddenChannel(42, Channel{ID: 1})
+	err := s.AddChannel(42, Channel{ID: 1})
 	if !errors.Is(err, ErrNoGroup) {
 		t.Fatalf("expected ErrNoGroup, got %v", err)
 	}
 }
 
-func TestRemoveForbiddenChannel(t *testing.T) {
+func TestRemoveChannel(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.UpsertGroup(1, "G"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddForbiddenChannel(1, Channel{ID: 10}); err != nil {
+	if err := s.AddChannel(1, Channel{ID: 10}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.RemoveForbiddenChannel(1, 10); err != nil {
-		t.Fatalf("RemoveForbiddenChannel: %v", err)
+	if err := s.RemoveChannel(1, 10); err != nil {
+		t.Fatalf("RemoveChannel: %v", err)
 	}
-	if s.IsForbidden(1, 10) {
+	if s.IsChannelForbidden(1, 10) {
 		t.Fatal("channel should no longer be forbidden")
 	}
 }
@@ -101,7 +101,7 @@ func TestRemoveMissingChannel(t *testing.T) {
 	if err := s.UpsertGroup(1, "G"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveForbiddenChannel(1, 99); !errors.Is(err, ErrNoChannel) {
+	if err := s.RemoveChannel(1, 99); !errors.Is(err, ErrNoChannel) {
 		t.Fatalf("expected ErrNoChannel, got %v", err)
 	}
 }
@@ -115,7 +115,7 @@ func TestPersistence(t *testing.T) {
 	if err := s.UpsertGroup(1, "G"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddForbiddenChannel(1, Channel{ID: 10}); err != nil {
+	if err := s.AddChannel(1, Channel{ID: 10}); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
@@ -126,10 +126,10 @@ func TestPersistence(t *testing.T) {
 	}
 	defer reloaded.Close()
 
-	if !reloaded.IsForbidden(1, 10) {
+	if !reloaded.IsChannelForbidden(1, 10) {
 		t.Fatal("channel should survive reload")
 	}
-	groups := reloaded.GroupsSnapshot()
+	groups := reloaded.Groups()
 	if len(groups) != 1 || groups[0].ForbiddenChannels[10].ID != 10 {
 		t.Fatalf("expected group with channel to survive reload, got %+v", groups)
 	}
@@ -143,7 +143,7 @@ func TestNewCreatesEmptyStore(t *testing.T) {
 	}
 	defer s.Close()
 
-	if len(s.GroupsSnapshot()) != 0 {
+	if len(s.Groups()) != 0 {
 		t.Fatal("expected empty groups")
 	}
 }

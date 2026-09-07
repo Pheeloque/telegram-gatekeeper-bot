@@ -1,6 +1,9 @@
 package bot
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSessionSelectedGroup(t *testing.T) {
 	s := newSession()
@@ -45,5 +48,24 @@ func TestSessionIsolation(t *testing.T) {
 	}
 	if got := s.GetAwaiting(2); got != InputNone {
 		t.Fatalf("user 2 awaiting should be InputNone, got %q", got)
+	}
+}
+
+func TestSessionAwaitingExpires(t *testing.T) {
+	s := newSession()
+
+	s.SetAwaiting(1, InputAddChannel)
+
+	s.mu.Lock()
+	entry := s.awaiting[1]
+	entry.at = time.Now().Add(-(awaitingTTL + time.Minute))
+	s.awaiting[1] = entry
+	s.mu.Unlock()
+
+	if got := s.GetAwaiting(1); got != InputNone {
+		t.Fatalf("expected InputNone after TTL, got %q", got)
+	}
+	if _, ok := s.awaiting[1]; ok {
+		t.Fatal("expired entry should be removed")
 	}
 }

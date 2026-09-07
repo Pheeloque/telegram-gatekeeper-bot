@@ -16,6 +16,7 @@ telegram-gatekeeper-bot/
 │   │   ├── keyboard.go
 │   │   ├── message.go
 │   │   ├── session.go
+│   │   ├── telegram_chat.go
 │   │   └── util.go
 │   ├── config/
 │   │   └── config.go

@@ -2,31 +2,46 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"telegram-gatekeeper-bot/internal/moderation"
 	"telegram-gatekeeper-bot/internal/storage"
 )
 
+// Moderation describes the application logic the handler uses.
+type Moderation interface {
+	UpsertGroup(id int64, title string) error
+	Groups() []storage.Group
+	GroupTitle(id int64) (string, bool)
+	IsForbidden(groupID, channelID int64) bool
+	AddChannel(groupID int64, channel storage.Channel) error
+	RemoveChannel(groupID, channelID int64) error
+	Channels(groupID int64) []storage.Channel
+}
+
+// ChatService resolves group membership and channels through Telegram.
+type ChatService interface {
+	IsAdmin(ctx context.Context, chatID, userID int64) bool
+	ResolveChannel(ctx context.Context, identifier string) (storage.Channel, bool)
+}
+
 type Handler struct {
-	store      *storage.Store
-	moderation *moderation.Service
+	moderation Moderation
+	chat       ChatService
 	session    *Session
 }
 
-func NewHandler(store *storage.Store, moderationService *moderation.Service) *Handler {
-	return &Handler{store: store, moderation: moderationService, session: newSession()}
+func NewHandler(moderation Moderation, chat ChatService) *Handler {
+	return &Handler{moderation: moderation, chat: chat, session: newSession()}
 }
 
 func (h *Handler) Handle(ctx context.Context, tg *bot.Bot, update *models.Update) {
 	if update.MyChatMember != nil && isGroupChat(update.MyChatMember.Chat.Type) {
 		chat := update.MyChatMember.Chat
-		if err := h.store.UpsertGroup(chat.ID, chat.Title); err != nil {
+		if err := h.moderation.UpsertGroup(chat.ID, chat.Title); err != nil {
 			log.Printf("store group from my_chat_member: %v", err)
 		}
 	}
@@ -41,7 +56,7 @@ func (h *Handler) Handle(ctx context.Context, tg *bot.Bot, update *models.Update
 
 func (h *Handler) handleMessage(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	if isGroupChat(msg.Chat.Type) {
-		if err := h.store.UpsertGroup(msg.Chat.ID, msg.Chat.Title); err != nil {
+		if err := h.moderation.UpsertGroup(msg.Chat.ID, msg.Chat.Title); err != nil {
 			log.Printf("store group: %v", err)
 		}
 		if msg.From != nil && msg.From.IsBot {
@@ -95,7 +110,7 @@ func (h *Handler) handlePrivateMessage(ctx context.Context, tg *bot.Bot, msg *mo
 
 func (h *Handler) handleCallback(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery) {
 	log.Printf("callback query: user=%d data=%q", q.From.ID, q.Data)
-	_ = h.answerCallback(ctx, tg, q.ID)
+	h.answerCallback(ctx, tg, q.ID)
 	if q.Data == "" {
 		return
 	}
@@ -124,18 +139,17 @@ func (h *Handler) openGroup(ctx context.Context, tg *bot.Bot, q *models.Callback
 		h.editCallback(ctx, tg, q, "Некорректный идентификатор группы.", nil)
 		return
 	}
-	if !h.isAdmin(ctx, tg, userID, groupID) {
+	if !h.chat.IsAdmin(ctx, groupID, userID) {
 		h.editCallback(ctx, tg, q, "У вас нет прав администратора в этой группе.", nil)
 		return
 	}
-	h.session.SetSelectedGroup(userID, groupID)
-	h.session.SetAwaiting(userID, InputNone)
+	h.selectGroup(userID, groupID)
 	h.editCallback(ctx, tg, q, "Группа: "+h.groupTitle(groupID), h.settingsKeyboard(groupID))
 }
 
 func (h *Handler) startAddChannel(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "add:")
-	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -145,7 +159,7 @@ func (h *Handler) startAddChannel(ctx context.Context, tg *bot.Bot, q *models.Ca
 
 func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	channelID, groupID, ok := parseRemoveCallback(q.Data)
-	if !ok || !h.selectAndVerify(ctx, tg, userID, groupID) {
+	if !ok || !h.selectAndVerify(ctx, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -158,7 +172,7 @@ func (h *Handler) removeChannelByCallback(ctx context.Context, tg *bot.Bot, q *m
 
 func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "list:")
-	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -167,7 +181,7 @@ func (h *Handler) showList(ctx context.Context, tg *bot.Bot, q *models.CallbackQ
 
 func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.CallbackQuery, userID int64) {
 	groupID, err := parseCallbackID(q.Data, "remove_menu:")
-	if err != nil || !h.selectAndVerify(ctx, tg, userID, groupID) {
+	if err != nil || !h.selectAndVerify(ctx, userID, groupID) {
 		h.editCallback(ctx, tg, q, "Нет доступа к этой группе.", nil)
 		return
 	}
@@ -178,16 +192,19 @@ func (h *Handler) showRemoveMenu(ctx context.Context, tg *bot.Bot, q *models.Cal
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, len(channels)+1)
 	for _, channel := range channels {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "❌ " + storage.DisplayChannel(channel), CallbackData: fmt.Sprintf("remove:%d:%d", channel.ID, groupID)}})
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text:         "❌ " + storage.DisplayChannel(channel),
+			CallbackData: removeCallbackID(channel.ID, groupID),
+		}})
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: "⬅ Назад", CallbackData: fmt.Sprintf("group:%d", groupID)}})
+	rows = append(rows, []models.InlineKeyboardButton{{Text: "⬅ Назад", CallbackData: "group:" + strconv.FormatInt(groupID, 10)}})
 	h.editCallback(ctx, tg, q, "Выберите канал для удаления:", &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.isAdmin(ctx, tg, userID, groupID) {
+	if !ok || !h.chat.IsAdmin(ctx, groupID, userID) {
 		h.session.SetAwaiting(userID, InputNone)
 		h.sendPrivate(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.", nil)
 		return
@@ -197,12 +214,11 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 		h.sendPrivate(ctx, tg, userID, "Нужен публичный канал в формате @channel_username.", nil)
 		return
 	}
-	chat, err := tg.GetChat(ctx, &bot.GetChatParams{ChatID: "@" + username})
-	if err != nil || chat.Type != models.ChatTypeChannel {
+	channel, found := h.chat.ResolveChannel(ctx, "@"+username)
+	if !found {
 		h.sendPrivate(ctx, tg, userID, "Не удалось найти публичный канал по этому username.", nil)
 		return
 	}
-	channel := storage.Channel{ID: chat.ID, Username: chat.Username, Title: chat.Title}
 	if err := h.moderation.AddChannel(groupID, channel); err != nil {
 		h.sendPrivate(ctx, tg, userID, "Не удалось сохранить канал.", nil)
 		return
@@ -214,17 +230,17 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
 	userID := msg.From.ID
 	groupID, ok := h.session.GetSelectedGroup(userID)
-	if !ok || !h.isAdmin(ctx, tg, userID, groupID) {
+	if !ok || !h.chat.IsAdmin(ctx, groupID, userID) {
 		h.session.SetAwaiting(userID, InputNone)
 		h.sendPrivate(ctx, tg, userID, "У вас больше нет прав администратора этой группы.", nil)
 		return
 	}
-	chat, err := tg.GetChat(ctx, &bot.GetChatParams{ChatID: strings.TrimSpace(msg.Text)})
-	if err != nil || chat.Type != models.ChatTypeChannel {
+	channel, found := h.chat.ResolveChannel(ctx, strings.TrimSpace(msg.Text))
+	if !found {
 		h.sendPrivate(ctx, tg, userID, "Пришлите @username канала, который нужно удалить из списка.", nil)
 		return
 	}
-	if err := h.moderation.RemoveChannel(groupID, chat.ID); err != nil {
+	if err := h.moderation.RemoveChannel(groupID, channel.ID); err != nil {
 		h.sendPrivate(ctx, tg, userID, "Этот канал не найден в чёрном списке.", h.settingsKeyboard(groupID))
 		return
 	}
@@ -232,35 +248,22 @@ func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *mo
 	h.sendPrivate(ctx, tg, userID, "Канал удалён из чёрного списка.", h.settingsKeyboard(groupID))
 }
 
-func (h *Handler) isAdmin(ctx context.Context, tg *bot.Bot, userID, groupID int64) bool {
-	member, err := tg.GetChatMember(ctx, &bot.GetChatMemberParams{ChatID: groupID, UserID: userID})
-	if err != nil {
-		return false
-	}
-	return hasAdminRights(member)
-}
-
-func hasAdminRights(member *models.ChatMember) bool {
-	switch member.Type {
-	case models.ChatMemberTypeOwner, models.ChatMemberTypeAdministrator:
-		return true
-	}
-	return false
-}
-
-func (h *Handler) selectAndVerify(ctx context.Context, tg *bot.Bot, userID, groupID int64) bool {
-	if !h.isAdmin(ctx, tg, userID, groupID) {
-		return false
-	}
+func (h *Handler) selectGroup(userID, groupID int64) {
 	h.session.SetSelectedGroup(userID, groupID)
+	h.session.SetAwaiting(userID, InputNone)
+}
+
+func (h *Handler) selectAndVerify(ctx context.Context, userID, groupID int64) bool {
+	if !h.chat.IsAdmin(ctx, groupID, userID) {
+		return false
+	}
+	h.selectGroup(userID, groupID)
 	return true
 }
 
 func (h *Handler) groupTitle(groupID int64) string {
-	for _, group := range h.store.GroupsSnapshot() {
-		if group.ID == groupID {
-			return group.Title
-		}
+	if title, ok := h.moderation.GroupTitle(groupID); ok {
+		return title
 	}
 	return strconv.FormatInt(groupID, 10)
 }

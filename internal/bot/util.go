@@ -16,6 +16,10 @@ func parseCallbackID(data, prefix string) (int64, error) {
 	return strconv.ParseInt(strings.TrimPrefix(data, prefix), 10, 64)
 }
 
+func removeCallbackID(channelID, groupID int64) string {
+	return "remove:" + strconv.FormatInt(channelID, 10) + ":" + strconv.FormatInt(groupID, 10)
+}
+
 func parseRemoveCallback(data string) (channelID, groupID int64, ok bool) {
 	parts := strings.Split(strings.TrimPrefix(data, "remove:"), ":")
 	if len(parts) != 2 {

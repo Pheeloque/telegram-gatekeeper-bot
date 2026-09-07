@@ -17,15 +17,15 @@ var (
 )
 
 type Channel struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username,omitempty"`
-	Title    string `json:"title"`
+	ID       int64
+	Username string
+	Title    string
 }
 
 type Group struct {
-	ID                int64             `json:"id"`
-	Title             string            `json:"title"`
-	ForbiddenChannels map[int64]Channel `json:"forbidden_channels"`
+	ID                int64
+	Title             string
+	ForbiddenChannels map[int64]Channel
 }
 
 type Store struct {
@@ -82,24 +82,28 @@ func (s *Store) UpsertGroup(id int64, title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var existing string
-	err := s.db.QueryRow(`SELECT title FROM groups WHERE id = ?`, id).Scan(&existing)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && (title == "" || existing == title) {
-		return nil
-	}
-
-	_, err = s.db.Exec(
+	_, err := s.db.Exec(
 		`INSERT INTO groups (id, title) VALUES (?, ?)
-		 ON CONFLICT(id) DO UPDATE SET title = excluded.title`,
-		id, title,
+		 ON CONFLICT(id) DO UPDATE SET title =
+			CASE WHEN ? = '' THEN title ELSE excluded.title END`,
+		id, title, title,
 	)
 	return err
 }
 
-func (s *Store) GroupsSnapshot() []Group {
+func (s *Store) GroupTitle(id int64) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var title string
+	err := s.db.QueryRow(`SELECT title FROM groups WHERE id = ?`, id).Scan(&title)
+	if err != nil {
+		return "", false
+	}
+	return title, true
+}
+
+func (s *Store) Groups() []Group {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -120,6 +124,10 @@ func (s *Store) GroupsSnapshot() []Group {
 			return nil
 		}
 		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil
 	}
 	rows.Close()
 
@@ -149,10 +157,13 @@ func (s *Store) channelsFor(groupID int64) map[int64]Channel {
 		}
 		result[ch.ID] = ch
 	}
+	if err := rows.Err(); err != nil {
+		return result
+	}
 	return result
 }
 
-func (s *Store) GetForbiddenChannels(groupID int64) []Channel {
+func (s *Store) Channels(groupID int64) []Channel {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -173,29 +184,38 @@ func (s *Store) GetForbiddenChannels(groupID int64) []Channel {
 		}
 		channels = append(channels, ch)
 	}
+	if err := rows.Err(); err != nil {
+		return channels
+	}
 	sort.Slice(channels, func(i, j int) bool {
 		return DisplayChannel(channels[i]) < DisplayChannel(channels[j])
 	})
 	return channels
 }
 
-func (s *Store) AddForbiddenChannel(groupID int64, channel Channel) error {
+func (s *Store) AddChannel(groupID int64, channel Channel) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.groupExists(groupID) {
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO forbidden_channels (group_id, channel_id, username, title)
+		 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ?)`,
+		groupID, channel.ID, channel.Username, channel.Title, groupID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 && !s.groupExists(groupID) {
 		return ErrNoGroup
 	}
-
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO forbidden_channels (group_id, channel_id, username, title)
-		 VALUES (?, ?, ?, ?)`,
-		groupID, channel.ID, channel.Username, channel.Title,
-	)
-	return err
+	return nil
 }
 
-func (s *Store) RemoveForbiddenChannel(groupID, channelID int64) error {
+func (s *Store) RemoveChannel(groupID, channelID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -220,7 +240,7 @@ func (s *Store) RemoveForbiddenChannel(groupID, channelID int64) error {
 	return nil
 }
 
-func (s *Store) IsForbidden(groupID, channelID int64) bool {
+func (s *Store) IsChannelForbidden(groupID, channelID int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

@@ -63,13 +63,13 @@ func TestHasAdminRights(t *testing.T) {
 	owner := &models.ChatMember{Type: models.ChatMemberTypeOwner}
 	member := &models.ChatMember{Type: models.ChatMemberTypeMember}
 
-	if !hasAdminRights(admin) {
+	if !isAdminMember(admin) {
 		t.Fatal("administrator should have admin rights")
 	}
-	if !hasAdminRights(owner) {
+	if !isAdminMember(owner) {
 		t.Fatal("owner should have admin rights")
 	}
-	if hasAdminRights(member) {
+	if isAdminMember(member) {
 		t.Fatal("member should not have admin rights")
 	}
 }

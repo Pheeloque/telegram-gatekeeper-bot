@@ -13,8 +13,8 @@ import (
 
 func (h *Handler) groupsKeyboard(ctx context.Context, tg *bot.Bot, userID int64) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
-	for _, group := range h.store.GroupsSnapshot() {
-		if !h.isAdmin(ctx, tg, userID, group.ID) {
+	for _, group := range h.moderation.Groups() {
+		if !h.chat.IsAdmin(ctx, group.ID, userID) {
 			continue
 		}
 		rows = append(rows, []models.InlineKeyboardButton{{Text: group.Title, CallbackData: "group:" + strconv.FormatInt(group.ID, 10)}})

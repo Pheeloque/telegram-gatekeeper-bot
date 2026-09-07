@@ -36,10 +36,9 @@ func (h *Handler) editCallback(ctx context.Context, tg *bot.Bot, q *models.Callb
 	}
 }
 
-func (h *Handler) answerCallback(ctx context.Context, tg *bot.Bot, id string) error {
+func (h *Handler) answerCallback(ctx context.Context, tg *bot.Bot, id string) {
 	_, err := tg.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: id})
 	if err != nil {
 		log.Printf("answer callback: %v", err)
 	}
-	return err
 }
