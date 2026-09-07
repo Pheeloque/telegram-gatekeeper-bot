@@ -6,12 +6,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"telegram-gatekeeper-bot/internal/storage"
 )
 
-func (h *Handler) groupsKeyboard(ctx context.Context, tg *bot.Bot, userID int64) *models.InlineKeyboardMarkup {
+func (h *Handler) groupsKeyboard(ctx context.Context, userID int64) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
 	for _, group := range h.moderation.Groups() {
 		if !h.chat.IsAdmin(ctx, group.ID, userID) {

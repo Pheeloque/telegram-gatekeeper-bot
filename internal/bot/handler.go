@@ -112,7 +112,7 @@ func (h *Handler) handlePrivateMessage(ctx context.Context, tg *bot.Bot, msg *mo
 		switch command {
 		case "start", "help", "groups":
 			h.session.SetAwaiting(userID, InputNone)
-			h.sendPrivate(ctx, tg, userID, "Выберите группу, которой хотите управлять:", h.groupsKeyboard(ctx, tg, userID))
+			h.sendPrivate(ctx, tg, userID, "Выберите группу, которой хотите управлять:", h.groupsKeyboard(ctx, userID))
 			return
 		}
 	}
@@ -138,7 +138,7 @@ func (h *Handler) handleCallback(ctx context.Context, tg *bot.Bot, q *models.Cal
 	switch {
 	case q.Data == "back":
 		h.session.SetAwaiting(userID, InputNone)
-		h.editCallback(ctx, tg, q, "Выберите группу:", h.groupsKeyboard(ctx, tg, userID))
+		h.editCallback(ctx, tg, q, "Выберите группу:", h.groupsKeyboard(ctx, userID))
 	case strings.HasPrefix(q.Data, "group:"):
 		h.openGroup(ctx, tg, q, userID)
 	case strings.HasPrefix(q.Data, "add:"):
