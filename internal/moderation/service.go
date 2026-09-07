@@ -21,6 +21,7 @@ type Storage interface {
 	Groups() []storage.Group
 	Channels(groupID int64) []storage.Channel
 	AddChannel(groupID int64, channel storage.Channel) error
+	EnrichChannel(groupID int64, channel storage.Channel) error
 	RemoveChannel(groupID, channelID int64) error
 	IsChannelForbidden(groupID, channelID int64) bool
 }
@@ -78,4 +79,8 @@ func (s *Service) RemoveChannel(groupID, channelID int64) error {
 
 func (s *Service) Channels(groupID int64) []storage.Channel {
 	return s.store.Channels(groupID)
+}
+
+func (s *Service) EnrichChannel(groupID int64, channel storage.Channel) error {
+	return s.store.EnrichChannel(groupID, channel)
 }

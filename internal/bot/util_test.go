@@ -72,6 +72,7 @@ func TestNormalizeChannelID(t *testing.T) {
 
 type fakeChatService struct {
 	resolved []string
+	byID     map[int64]storage.Channel
 }
 
 func (f *fakeChatService) IsAdmin(ctx context.Context, chatID, userID int64) bool { return true }
@@ -81,23 +82,35 @@ func (f *fakeChatService) ResolveChannel(ctx context.Context, username string) (
 	return storage.Channel{ID: 7, Username: "chan"}, true
 }
 
+func (f *fakeChatService) ResolveChannelByID(ctx context.Context, id int64) (storage.Channel, bool) {
+	channel, ok := f.byID[id]
+	return channel, ok
+}
+
 func TestResolveIdentifier(t *testing.T) {
-	fake := &fakeChatService{}
+	fake := &fakeChatService{byID: map[int64]storage.Channel{
+		-1001418440636: {ID: -1001418440636, Title: "Known Channel"},
+	}}
 	h := &Handler{chat: fake}
 
-	channel, ok := h.resolveIdentifier(context.Background(), channelRef{id: 1418440636, byID: true})
-	if !ok || channel.ID != -1001418440636 {
-		t.Fatalf("expected ID -1001418440636, got %d (ok=%v)", channel.ID, ok)
+	channel, verified, ok := h.resolveIdentifier(context.Background(), channelRef{id: 1418440636, byID: true})
+	if !ok || !verified || channel.Title != "Known Channel" || channel.ID != -1001418440636 {
+		t.Fatalf("expected verified channel, got %+v (verified=%v ok=%v)", channel, verified, ok)
 	}
 
-	channel, ok = h.resolveIdentifier(context.Background(), channelRef{id: -1001418440636, byID: true})
-	if !ok || channel.ID != -1001418440636 {
-		t.Fatalf("expected ID -1001418440636 unchanged, got %d (ok=%v)", channel.ID, ok)
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{id: 2222222, byID: true})
+	if !ok || verified || channel.ID != -1002222222 {
+		t.Fatalf("expected unverified channel with ID -1002222222, got %+v (verified=%v ok=%v)", channel, verified, ok)
 	}
 
-	channel, ok = h.resolveIdentifier(context.Background(), channelRef{username: "chan"})
-	if !ok || channel.ID != 7 {
-		t.Fatalf("expected username resolved through chat service, got ID=%d (ok=%v)", channel.ID, ok)
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{id: -1001418440636, byID: true})
+	if !ok || !verified || channel.ID != -1001418440636 {
+		t.Fatalf("expected ID -1001418440636 unchanged, got %d (verified=%v ok=%v)", channel.ID, verified, ok)
+	}
+
+	channel, verified, ok = h.resolveIdentifier(context.Background(), channelRef{username: "chan"})
+	if !ok || !verified || channel.ID != 7 {
+		t.Fatalf("expected username resolved through chat service, got ID=%d (verified=%v ok=%v)", channel.ID, verified, ok)
 	}
 	if len(fake.resolved) != 1 || fake.resolved[0] != "@chan" {
 		t.Fatalf("expected username path to use chat service, got %v", fake.resolved)

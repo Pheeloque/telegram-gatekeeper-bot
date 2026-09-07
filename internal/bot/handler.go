@@ -19,6 +19,7 @@ type Moderation interface {
 	GroupTitle(id int64) (string, bool)
 	IsForbidden(groupID, channelID int64) bool
 	AddChannel(groupID int64, channel storage.Channel) error
+	EnrichChannel(groupID int64, channel storage.Channel) error
 	RemoveChannel(groupID, channelID int64) error
 	Channels(groupID int64) []storage.Channel
 }
@@ -27,6 +28,7 @@ type Moderation interface {
 type ChatService interface {
 	IsAdmin(ctx context.Context, chatID, userID int64) bool
 	ResolveChannel(ctx context.Context, username string) (storage.Channel, bool)
+	ResolveChannelByID(ctx context.Context, id int64) (storage.Channel, bool)
 }
 
 type Handler struct {
@@ -86,6 +88,12 @@ func (h *Handler) handleModeration(ctx context.Context, tg *bot.Bot, msg *models
 		return
 	}
 	log.Printf("deleted forwarded message chat=%d message=%d from channel=%d", msg.Chat.ID, msg.ID, channelID)
+
+	if channel, ok := forwardChannel(msg.ForwardOrigin); ok {
+		if err := h.moderation.EnrichChannel(msg.Chat.ID, storage.Channel{ID: channel.ID, Username: channel.Username, Title: channel.Title}); err != nil {
+			log.Printf("enrich channel %d: %v", channel.ID, err)
+		}
+	}
 
 	h.notifyDeleted(ctx, tg, msg)
 }
@@ -229,7 +237,7 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 		h.sendPrivate(ctx, tg, userID, "Сначала выберите группу через /start и убедитесь, что вы её администратор.", nil)
 		return
 	}
-	channel, ok := h.resolveChannelInput(ctx, msg)
+	channel, verified, ok := h.resolveChannelInput(ctx, msg)
 	if !ok {
 		h.sendPrivate(ctx, tg, userID, "Пришлите @username или ID канала, либо перешлите сюда любое сообщение из этого канала.", nil)
 		return
@@ -239,7 +247,11 @@ func (h *Handler) processAddChannel(ctx context.Context, tg *bot.Bot, msg *model
 		return
 	}
 	h.session.SetAwaiting(userID, InputNone)
-	h.sendPrivate(ctx, tg, userID, "Канал добавлен в чёрный список: "+storage.DisplayChannel(channel), h.settingsKeyboard(groupID))
+	text := "Канал добавлен в чёрный список: " + storage.DisplayChannel(channel)
+	if !verified {
+		text += "\n\nНазвание канала подставится автоматически после первой пересылки сообщения из него в бота или в группу."
+	}
+	h.sendPrivate(ctx, tg, userID, text, h.settingsKeyboard(groupID))
 }
 
 func (h *Handler) channelFromForward(msg *models.Message) (storage.Channel, bool) {
@@ -253,27 +265,34 @@ func (h *Handler) channelFromForward(msg *models.Message) (storage.Channel, bool
 // resolveChannelInput turns a user's message into a channel to blacklist.
 // A forwarded message wins — its forward_origin carries the exact Bot API
 // channel ID. Otherwise the message text is parsed as a username or numeric ID.
-func (h *Handler) resolveChannelInput(ctx context.Context, msg *models.Message) (storage.Channel, bool) {
-	if channel, ok := h.channelFromForward(msg); ok {
-		return channel, true
+// The second return reports whether the channel identity was confirmed through
+// Telegram (a forwarded origin or a successful getChat lookup).
+func (h *Handler) resolveChannelInput(ctx context.Context, msg *models.Message) (channel storage.Channel, verified, ok bool) {
+	if channel, found := h.channelFromForward(msg); found {
+		return channel, true, true
 	}
-	ref, ok := parseChannelIdentifier(msg.Text)
-	if !ok {
-		return storage.Channel{}, false
+	ref, found := parseChannelIdentifier(msg.Text)
+	if !found {
+		return storage.Channel{}, false, false
 	}
 	return h.resolveIdentifier(ctx, ref)
 }
 
 // resolveIdentifier converts a parsed channel reference into a channel.
-// Usernames are resolved through Telegram. Numeric IDs cannot be resolved via
-// getChat unless the bot is a member, so they are stored directly:
-// a positive ID is normalized to the -100... supergroup/channel form that the
-// Bot API reports in forward_origin.
-func (h *Handler) resolveIdentifier(ctx context.Context, ref channelRef) (storage.Channel, bool) {
-	if ref.byID {
-		return storage.Channel{ID: normalizeChannelID(ref.id)}, true
+// Usernames must resolve through Telegram. Numeric IDs may not be resolvable via
+// getChat unless the bot is a member, so they are stored directly — as a
+// best-effort step getChat is tried first, and if it succeeds the resolved
+// channel data and verification flag are returned.
+func (h *Handler) resolveIdentifier(ctx context.Context, ref channelRef) (channel storage.Channel, verified, ok bool) {
+	if !ref.byID {
+		resolved, found := h.chat.ResolveChannel(ctx, "@"+ref.username)
+		return resolved, found, found
 	}
-	return h.chat.ResolveChannel(ctx, "@"+ref.username)
+	id := normalizeChannelID(ref.id)
+	if resolved, found := h.chat.ResolveChannelByID(ctx, id); found {
+		return resolved, true, true
+	}
+	return storage.Channel{ID: id}, false, true
 }
 
 func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *models.Message) {
@@ -284,7 +303,7 @@ func (h *Handler) processRemoveChannel(ctx context.Context, tg *bot.Bot, msg *mo
 		h.sendPrivate(ctx, tg, userID, "У вас больше нет прав администратора этой группы.", nil)
 		return
 	}
-	channel, ok := h.resolveChannelInput(ctx, msg)
+	channel, _, ok := h.resolveChannelInput(ctx, msg)
 	if !ok {
 		h.sendPrivate(ctx, tg, userID, "Пришлите @username или ID канала, либо перешлите сообщение из канала, который нужно удалить из списка.", nil)
 		return
