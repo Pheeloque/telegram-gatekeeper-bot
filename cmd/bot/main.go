@@ -23,6 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load storage: %v", err)
 	}
+	defer store.Close()
 
 	moderationService := moderation.New(store)
 

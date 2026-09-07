@@ -22,6 +22,10 @@ func New(store *storage.Store) *Service {
 	return &Service{store: store}
 }
 
+func (s *Service) Close() error {
+	return s.store.Close()
+}
+
 func (s *Service) IsForbidden(groupID, channelID int64) bool {
 	return s.store.IsForbidden(groupID, channelID)
 }

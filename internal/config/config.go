@@ -23,7 +23,7 @@ func Load() (Config, error) {
 
 	storagePath := strings.TrimSpace(os.Getenv("STORAGE_PATH"))
 	if storagePath == "" {
-		storagePath = "data.json"
+		storagePath = "data.db"
 	}
 
 	return Config{TelegramBotToken: token, StoragePath: storagePath}, nil

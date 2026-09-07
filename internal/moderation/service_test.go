@@ -10,7 +10,7 @@ import (
 
 func newTestService(t *testing.T) *Service {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "data.json")
+	path := filepath.Join(t.TempDir(), "data.db")
 	store, err := storage.New(path)
 	if err != nil {
 		t.Fatalf("storage.New: %v", err)
@@ -18,7 +18,9 @@ func newTestService(t *testing.T) *Service {
 	if err := store.UpsertGroup(1, "G"); err != nil {
 		t.Fatal(err)
 	}
-	return New(store)
+	s := New(store)
+	t.Cleanup(func() { _ = s.Close() })
+	return s
 }
 
 func TestAddAndIsForbidden(t *testing.T) {

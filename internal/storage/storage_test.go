@@ -2,18 +2,18 @@ package storage
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "data.json")
+	path := filepath.Join(t.TempDir(), "data.db")
 	s, err := New(path)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -31,7 +31,6 @@ func TestUpsertAndSnapshotGroup(t *testing.T) {
 	if len(groups) != 2 {
 		t.Fatalf("expected 2 groups, got %d", len(groups))
 	}
-	// snapshot is sorted by title
 	if groups[0].Title != "First" || groups[1].Title != "Second" {
 		t.Fatalf("unexpected order: %+v", groups)
 	}
@@ -108,7 +107,7 @@ func TestRemoveMissingChannel(t *testing.T) {
 }
 
 func TestPersistence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "data.json")
+	path := filepath.Join(t.TempDir(), "data.db")
 	s, err := New(path)
 	if err != nil {
 		t.Fatal(err)
@@ -119,24 +118,32 @@ func TestPersistence(t *testing.T) {
 	if err := s.AddForbiddenChannel(1, Channel{ID: 10}); err != nil {
 		t.Fatal(err)
 	}
+	_ = s.Close()
 
 	reloaded, err := New(path)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
+	defer reloaded.Close()
+
 	if !reloaded.IsForbidden(1, 10) {
 		t.Fatal("channel should survive reload")
 	}
+	groups := reloaded.GroupsSnapshot()
+	if len(groups) != 1 || groups[0].ForbiddenChannels[10].ID != 10 {
+		t.Fatalf("expected group with channel to survive reload, got %+v", groups)
+	}
 }
 
-func TestNewMissingFileCreatesEmpty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nope.json")
+func TestNewCreatesEmptyStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.db")
 	s, err := New(path)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(s.Groups) != 0 {
+	defer s.Close()
+
+	if len(s.GroupsSnapshot()) != 0 {
 		t.Fatal("expected empty groups")
 	}
-	os.Remove(path)
 }
